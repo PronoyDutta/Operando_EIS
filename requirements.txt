@@ -4,3 +4,5 @@ matplotlib
 impedance
 jupyter
 ipympl
+scipy
+ipywidgets
