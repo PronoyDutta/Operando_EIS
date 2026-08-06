@@ -1,0 +1,504 @@
+### CELL 0 ###
+# Electrochemical Impedance Spectroscopy (EIS) Analysis
+This notebook is designed to process, visualize, and fit EIS data from Biologic (.mpt) files.
+It uses `impedance.py` for equivalent circuit fitting and `ipympl` for interactive Matplotlib plots.
+### CELL 1 ###
+%matplotlib inline
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from pathlib import Path
+from impedance.models.circuits import CustomCircuit
+from impedance.visualization import plot_nyquist, plot_bode
+### CELL 2 ###
+## 1. Data Loading
+Robustly read Biologic `.mpt` files. The function skips the metadata headers automatically.
+### CELL 3 ###
+def load_biologic_mpt(filepath):
+    # Find the header row
+    skip_rows = 0
+    with open(filepath, 'r', encoding='latin-1') as f:
+        for i, line in enumerate(f):
+            if line.startswith('mode'):
+                skip_rows = i
+                break
+                
+    # Read the data
+    df = pd.read_csv(filepath, sep='\t', skiprows=skip_rows, encoding='latin-1')
+    
+    if 'z cycle' in df.columns:
+        segregation_col = 'z cycle'
+    elif 'cycle number' in df.columns and df['cycle number'].nunique() > 1:
+        segregation_col = 'cycle number'
+    elif 'loop number' in df.columns:
+        segregation_col = 'loop number'
+    else:
+        segregation_col = None
+    
+    eis_measurements = {}
+    
+    if segregation_col and segregation_col in df.columns:
+        for cycle_id, group in df.groupby(segregation_col):
+            # Bulletproof filter: drop empty rows, 0Hz freq, and 0 Ohm impedance points
+            group = group.dropna(subset=['freq/Hz'])
+            group = group[(group['freq/Hz'] != 0.0) & (group['Re(Z)/Ohm'] != 0.0)] 
+            group = group[group['freq/Hz'] >= 0.09]
+
+
+            if len(group) == 0:
+                continue
+                
+            freq = group['freq/Hz'].values
+            Z_real = group['Re(Z)/Ohm'].values
+            Z_imag = group['-Im(Z)/Ohm'].values
+            Z = Z_real - 1j * Z_imag
+            eis_measurements[int(cycle_id)] = (freq, Z)
+    else:
+        # Fallback if no cycle column exists
+        group = df.dropna(subset=['freq/Hz'])
+        group = group[(group['freq/Hz'] != 0.0) & (group['Re(Z)/Ohm'] != 0.0)]
+        
+        freq = group['freq/Hz'].values
+        Z_real = group['Re(Z)/Ohm'].values
+        Z_imag = group['-Im(Z)/Ohm'].values
+        Z = Z_real - 1j * Z_imag
+        eis_measurements[1] = (freq, Z)
+        
+    return eis_measurements
+
+
+data_path = Path("data/20260722_C23_SMSP20_operando_EIS_C01.mpt")
+eis_dict = load_biologic_mpt(data_path)
+print(f"Found {len(eis_dict)} EIS measurements.")
+### CELL 4 ###
+# Plot the individual EIS curves
+### CELL 5 ###
+import ipywidgets as widgets
+import matplotlib.pyplot as plt
+from impedance.visualization import plot_nyquist
+from IPython.display import display, clear_output
+
+def update_plot(cycle_id):
+    # Retrieve the data
+    freq, Z = eis_dict[cycle_id]
+    
+    # Exclude the very last "zero" point to fix the straight line artifact
+   
+    
+    # Create and draw the plot from scratch each time
+    fig, ax_nyq = plt.subplots(figsize=(7, 7))
+    plot_nyquist(Z, ax=ax_nyq)
+    ax_nyq.set_title(f"Operando Nyquist Plot - Cycle {cycle_id}")
+    
+    # Show the plot
+    plt.xlim(0,100)
+    plt.ylim(0,100)
+    plt.show()
+
+# Get the available cycle IDs from our loaded dictionary
+cycle_ids = sorted(list(eis_dict.keys()))
+
+# Create the interactive slider
+cycle_slider = widgets.SelectionSlider(
+    options=cycle_ids,
+    value=cycle_ids[0],
+    description='Cycle:',
+    continuous_update=False, 
+    orientation='horizontal'
+)
+
+
+# Link the slider to our update function
+widgets.interact(update_plot, cycle_id=cycle_slider);
+
+### CELL 6 ###
+# Waterfall plot
+### CELL 7 ###
+import matplotlib.pyplot as plt
+import numpy as np
+import matplotlib.cm as cm
+
+# Create a new figure with 3D projection
+fig = plt.figure(figsize=(10, 8))
+ax = fig.add_subplot(111, projection='3d')
+
+# Get all cycles
+cycle_ids = sorted(list(eis_dict.keys()))
+
+# Loop through each cycle and plot it along the Y-axis (depth)
+for cycle in cycle_ids:
+    freq, Z = eis_dict[cycle]
+    
+    # Extract real and negative imaginary impedance
+    Z_re = Z.real
+    Z_im_neg = -Z.imag
+    
+    # Create an array for the depth axis (Y-axis)
+    y_val = np.full_like(Z_re, cycle)
+    
+    # Use a colormap to give a nice gradient from first to last cycle
+    color = cm.plasma(cycle / max(cycle_ids))
+    
+    # Plot the 3D line
+    ax.plot(Z_re, y_val, Z_im_neg, marker='.', markersize=4, 
+            linestyle='-', linewidth=1.5, color=color)
+
+# Set axis labels
+ax.set_xlabel("Z' ($\Omega$)", fontsize=12, labelpad=10)
+ax.set_ylabel("Cycle Number", fontsize=12, labelpad=10)
+ax.set_zlabel("-Z'' ($\Omega$)", fontsize=12, labelpad=10)
+
+# Make the background planes (walls) completely transparent!
+ax.xaxis.set_pane_color((1.0, 1.0, 1.0, 0.0))
+ax.yaxis.set_pane_color((1.0, 1.0, 1.0, 0.0))
+ax.zaxis.set_pane_color((1.0, 1.0, 1.0, 0.0))
+
+# Make the grid lines very faint and clean
+ax.xaxis._axinfo["grid"]['color'] = (0.9, 0.9, 0.9, 1)
+ax.yaxis._axinfo["grid"]['color'] = (0.9, 0.9, 0.9, 1)
+ax.zaxis._axinfo["grid"]['color'] = (0.9, 0.9, 0.9, 1)
+
+# Set a nice default viewing angle (Elevation, Azimuth)
+ax.view_init(elev=25, azim=-55)
+
+ax.set_title("Operando 3D Waterfall Nyquist Plot", fontsize=14)
+
+plt.show()
+
+### CELL 8 ###
+# 2D plot
+### CELL 9 ###
+import ipywidgets as widgets
+import matplotlib.pyplot as plt
+import matplotlib.cm as cm
+from impedance.visualization import plot_nyquist
+
+# Get all available cycle IDs
+cycle_ids = sorted(list(eis_dict.keys()))
+
+def update_multi_plot(cycle_range):
+    # Retrieve the start and end cycles from the slider
+    start, end = cycle_range
+    
+    # Create the figure completely from scratch (Best for %matplotlib inline)
+    fig, ax_nyq = plt.subplots(figsize=(8, 8))
+    
+    # Filter for only the cycles within our selected range
+    selected_cycles = [c for c in cycle_ids if start <= c <= end]
+    
+    for c in selected_cycles:
+        freq, Z = eis_dict[c]
+        
+        # Generate a color from the gradient (Plasma: Purple -> Yellow)
+        color = cm.plasma(c / max(cycle_ids)) if max(cycle_ids) > 0 else 'blue'
+        
+        # Plot the actual data
+        plot_nyquist(Z, ax=ax_nyq, fmt='.-', color=color)
+        
+        # Add a dummy line to generate a nice legend label
+        ax_nyq.plot([], [], '.-', color=color, label=f'Cycle {c}')
+        
+    ax_nyq.set_title(f"Operando Nyquist Plot (Cycles {start} to {end})")
+    
+    # Add a legend and push it just outside the plot so it doesn't cover data
+    ax_nyq.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    
+    plt.tight_layout()
+    plt.show()
+
+# Create an interactive range slider (two handles)
+cycle_range_slider = widgets.IntRangeSlider(
+    value=[cycle_ids[0], cycle_ids[-1]], # Default to showing all cycles
+    min=min(cycle_ids),
+    max=max(cycle_ids),
+    step=1,
+    description='Cycles:',
+    continuous_update=False,
+    orientation='horizontal'
+)
+
+# Link the slider to our update function
+widgets.interact(update_multi_plot, cycle_range=cycle_range_slider);
+
+### CELL 10 ###
+## 2. Interactive Visualization
+Interactive Nyquist and Bode plots. Since `%matplotlib widget` is enabled, you can zoom, pan, and hover over data points.
+### CELL 11 ###
+def plot_eis_data(freq, Z, title="EIS Measurement"):
+    fig, (ax_nyq, ax_bode) = plt.subplots(1, 2, figsize=(12, 5))
+    
+    # Nyquist Plot
+    plot_nyquist(Z, ax=ax_nyq)
+    ax_nyq.set_title(f"Nyquist Plot - {title}")
+    
+    # Bode Plot
+    plot_bode(freq, Z, axes=ax_bode)
+    ax_bode[0].set_title(f"Bode Plot - {title}")
+    
+    plt.tight_layout()
+    plt.show()
+
+# Example usage (plotting the first loop):
+# cycle_id = list(eis_dict.keys())[0]
+# freq, Z = eis_dict[cycle_id]
+# plot_eis_data(freq, Z, title=f"Operando LiS - Cycle {cycle_id}")
+### CELL 12 ###
+## 3. Equivalent Circuit Modeling & Fitting
+Define your equivalent circuit here. 
+Since you are working with a LiS battery in a 3-electrode setup, you might start with a Modified Randles circuit, or use multiple RC/RQ elements for the different interfaces (e.g., SEI, charge transfer).
+
+**Common Elements in impedance.py:**
+- `R`: Resistor
+- `C`: Capacitor
+- `CPE`: Constant Phase Element
+- `W`: Warburg Element
+- `p(R1, C1)`: Parallel elements
+- `-`: Series elements
+### CELL 13 ###
+# Define your circuit model
+# Example: R0 + p(R1, CPE1) + p(R2, CPE2) + W1
+# circuit_string = 'R0-p(R1,CPE1)-p(R2,CPE2)-W1'
+# initial_guess = [10, 50, 1e-4, 0.8, 20, 1e-3, 0.8, 100]
+
+circuit_string = 'R0-p(R1,C1)-W1'
+initial_guess = [10, 50, 1e-4, 100] # Provide an initial guess for the parameters
+
+circuit = CustomCircuit(circuit_string, initial_guess=initial_guess)
+
+# To fit the data from the selected cycle:
+# circuit.fit(freq, Z)
+# print(circuit)
+
+# To plot the fit against the data:
+# Z_fit = circuit.predict(freq)
+# fig, (ax_nyq, ax_bode) = plt.subplots(1, 2, figsize=(12, 5))
+# plot_nyquist(Z, ax=ax_nyq, fmt='o')
+# plot_nyquist(Z_fit, ax=ax_nyq, fmt='-')
+# plt.legend(['Data', 'Fit'])
+# plt.show()
+### CELL 14 ###
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# Re-read the raw file without filtering
+skip_rows = 0
+with open(data_path, 'r', encoding='latin-1') as f:
+    for i, line in enumerate(f):
+        if line.startswith('mode'):
+            skip_rows = i
+            break
+            
+df_raw = pd.read_csv(data_path, sep='\t', skiprows=skip_rows, encoding='latin-1')
+
+# Parse the time column as real Datetimes
+df_raw['time/s'] = pd.to_datetime(df_raw['time/s'], errors='coerce')
+
+# Convert to relative time in hours
+df_raw['time/h'] = (df_raw['time/s'] - df_raw['time/s'].iloc[0]) / pd.Timedelta(hours=1)
+
+# Create the plot with a height ratio of 3:1
+fig, (ax1, ax2) = plt.subplots(nrows=2, ncols=1, figsize=(10, 7), sharex=True, 
+                               gridspec_kw={'height_ratios': [3, 1], 'hspace': 0.1})
+
+# --- TOP PLOT: Both Electrodes ---
+ax1.plot(df_raw['time/h'], df_raw['Ece/V'], label='Anode vs Ref (Ece)', color='red', linewidth=1.5)
+ax1.plot(df_raw['time/h'], df_raw['Ewe/V'], label='Cathode vs Ref (Ewe)', color='blue', linewidth=1.5)
+ax1.set_ylabel('Potential (V)', fontsize=12)
+ax1.set_title('Overall Electrode Stability', fontsize=14)
+ax1.legend(loc='best')
+ax1.grid(True, alpha=0.5)
+
+# --- BOTTOM PLOT: Anode Focused (Strip) ---
+ax2.plot(df_raw['time/h'], df_raw['Ece/V'], label='Anode vs Ref (Ece)', color='red', linewidth=1.5)
+ax2.set_xlabel('Time (Hours)', fontsize=12)
+ax2.set_ylabel('Anode (V)', fontsize=12)
+# Removed title from the bottom plot so it looks more like a continuous strip
+ax2.legend(loc='best')
+ax2.grid(True, alpha=0.5)
+
+plt.tight_layout()
+plt.show()
+
+### CELL 15 ###
+# DRT analysis
+### CELL 16 ###
+import numpy as np
+import ipywidgets as widgets
+import matplotlib.pyplot as plt
+from scipy.optimize import nnls
+
+def compute_drt(freq, Z_imag, lam):
+    """
+    Computes Distribution of Relaxation Times using Tikhonov Regularization (NNLS).
+    """
+    omega = 2 * np.pi * freq
+    tau = 1 / omega  # Time constants corresponding to measured frequencies
+    
+    # 1. Build the design matrix A (for imaginary impedance part)
+    A = np.zeros((len(omega), len(tau)))
+    for i, w in enumerate(omega):
+        for j, t in enumerate(tau):
+            A[i, j] = (w * t) / (1 + (w * t)**2)
+            
+    # 2. Build the regularization matrix L (2nd derivative penalty for smoothness)
+    n = len(tau)
+    L = np.zeros((n-2, n))
+    for i in range(n-2):
+        L[i, i] = 1
+        L[i, i+1] = -2
+        L[i, i+2] = 1
+        
+    # 3. Augment matrices for Tikhonov regularization in NNLS
+    A_aug = np.vstack([A, np.sqrt(lam) * L])
+    b_aug = np.hstack([Z_imag, np.zeros(n-2)])
+    
+    # 4. Solve for gamma (must be strictly non-negative)
+    gamma_opt, _ = nnls(A_aug, b_aug)
+    
+    return tau, gamma_opt
+
+# --- Interactive DRT Plotting ---
+def update_drt(cycle_id, log_lam):
+    lam = 10**log_lam
+    
+    # Get the data for the selected cycle
+    freq, Z = eis_dict[cycle_id]
+    Z_imag_data = -Z.imag  # We fit against the negative imaginary part
+    
+    # Compute the DRT!
+    tau, gamma = compute_drt(freq, Z_imag_data, lam)
+    
+    # Plot it
+    fig, ax_drt = plt.subplots(figsize=(8, 5))
+    ax_drt.semilogx(tau, gamma, marker='o', markersize=4, linestyle='-', color='indigo')
+    
+    ax_drt.set_xlabel('Relaxation Time $\\tau$ (s)', fontsize=12)
+    ax_drt.set_ylabel('$\gamma(\\tau)$ ($\Omega$)', fontsize=12)
+    ax_drt.set_title(f"DRT Analysis - Cycle {cycle_id} ($\\lambda$ = {lam:.1e})", fontsize=14)
+    ax_drt.grid(True, alpha=0.5)
+    
+    plt.tight_layout()
+ #   plt.xlim(0,0.5)
+  #  plt.ylim(0,30)
+    plt.show()
+
+# Get available cycle IDs
+cycle_ids = sorted(list(eis_dict.keys()))
+
+# Sliders
+cycle_slider = widgets.SelectionSlider(
+    options=cycle_ids, value=cycle_ids[0], description='Cycle:', continuous_update=False
+)
+
+lam_slider = widgets.FloatSlider(
+    value=-2.0, min=-5.0, max=1.0, step=0.5, 
+    description='log($\\lambda$):', continuous_update=False,
+    tooltip="Lower = fits noise (spiky). Higher = over-smoothed."
+)
+
+widgets.interact(update_drt, cycle_id=cycle_slider, log_lam=lam_slider);
+
+### CELL 17 ###
+import numpy as np
+import ipywidgets as widgets
+import matplotlib.pyplot as plt
+import matplotlib.cm as cm
+from scipy.interpolate import interp1d
+from IPython.display import display
+
+# 1. Set a fixed Regularization Parameter
+lam = 10**-2.0 
+all_cycle_ids = sorted(list(eis_dict.keys()))
+
+# 2. Pre-compute the common X-axis (tau) based on the last cycle
+master_freq, _ = eis_dict[all_cycle_ids[-1]]
+tau_ref = 1 / (2 * np.pi * master_freq)
+
+# 3. PRE-COMPUTE all DRT curves
+gamma_dict = {}
+for c in all_cycle_ids:
+    freq, Z = eis_dict[c]
+    tau, gamma = compute_drt(freq, -Z.imag, lam)
+    f_interp = interp1d(np.log10(tau), gamma, bounds_error=False, fill_value=0.0)
+    gamma_dict[c] = f_interp(np.log10(tau_ref))
+
+# Find the absolute maximum intensity across all cycles to set our slider scale
+global_gamma_max = max([np.max(g) for g in gamma_dict.values()])
+
+# 4. Interactive Plotting Function
+def update_drt_multi(cycle_range, intensity_max, log_tau_max):
+    start, end = cycle_range
+    selected_cycles = [c for c in all_cycle_ids if start <= c <= end]
+    
+    if len(selected_cycles) < 2:
+        print("Please select a range of at least 2 cycles to generate the Contour Map.")
+        return
+        
+    gamma_matrix = np.array([gamma_dict[c] for c in selected_cycles])
+    
+    # Calculate tau max from the logarithmic slider
+    tau_max = 10**log_tau_max
+    tau_min = np.min(tau_ref) # Keep the left side fixed to the minimum tau
+    
+    # Create the figure
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+
+    # --- PLOT 1: 2D Overlapping Curves ---
+    for i, c in enumerate(selected_cycles):
+        color = cm.plasma(c / max(all_cycle_ids)) if max(all_cycle_ids) > 0 else 'blue'
+        ax1.semilogx(tau_ref, gamma_matrix[i], color=color, linewidth=1.5)
+
+    # Set the dynamic limits!
+    ax1.set_xlim(left=tau_min, right=tau_max)
+    ax1.set_ylim(bottom=0, top=intensity_max)
+    
+    ax1.set_xlabel('Relaxation Time $\\tau$ (s)', fontsize=12)
+    ax1.set_ylabel('$\gamma(\\tau)$ ($\Omega$)', fontsize=12)
+    ax1.set_title(f'Overlapping DRT (Cycles {start}-{end})', fontsize=14)
+    ax1.grid(True, alpha=0.5)
+
+    # Colorbar
+    sm = plt.cm.ScalarMappable(cmap=cm.plasma, norm=plt.Normalize(vmin=min(all_cycle_ids), vmax=max(all_cycle_ids)))
+    cbar1 = fig.colorbar(sm, ax=ax1)
+    cbar1.set_label('Cycle Number')
+
+    # --- PLOT 2: 2D Contour Map (Heatmap) ---
+    X, Y = np.meshgrid(tau_ref, selected_cycles)
+    
+    # We use np.linspace to force the contour levels to map from 0 up to intensity_max.
+    # extend='max' means anything higher than intensity_max is just colored with the top color (yellow)
+    contour = ax2.contourf(X, Y, gamma_matrix, levels=np.linspace(0, intensity_max, 30), cmap='viridis', extend='max')
+
+    ax2.set_xscale('log') 
+    ax2.set_xlim(left=tau_min, right=tau_max) # Apply X-axis crop to contour map too
+    ax2.set_xlabel('Relaxation Time $\\tau$ (s)', fontsize=12)
+    ax2.set_ylabel('Cycle Number', fontsize=12)
+    ax2.set_title(f'DRT Contour Map (Cycles {start}-{end})', fontsize=14)
+
+    cbar2 = fig.colorbar(contour, ax=ax2)
+    cbar2.set_label('$\gamma(\\tau)$ Intensity ($\Omega$)')
+
+    plt.tight_layout()
+    plt.show()
+
+# 5. Create Sliders
+cycle_range_slider = widgets.IntRangeSlider(
+    value=[all_cycle_ids[0], all_cycle_ids[-1]],
+    min=min(all_cycle_ids), max=max(all_cycle_ids), step=1,
+    description='Cycles:', continuous_update=False, orientation='horizontal'
+)
+
+intensity_slider = widgets.FloatSlider(
+    value=global_gamma_max, min=0.1, max=global_gamma_max*1.2, step=0.5,
+    description='Intensity:', continuous_update=False, orientation='horizontal',
+    tooltip="Lower this to artificially boost the brightness of tiny peaks."
+)
+
+tau_max_slider = widgets.FloatSlider(
+    value=np.log10(np.max(tau_ref)), min=np.log10(np.min(tau_ref)), max=np.log10(np.max(tau_ref)), step=0.1,
+    description='log(Max $\\tau$):', continuous_update=False, orientation='horizontal',
+    tooltip="Slide left to zoom in and hide the high-tau (low frequency) noise."
+)
+
+# Link all sliders!
+widgets.interact(update_drt_multi, cycle_range=cycle_range_slider, intensity_max=intensity_slider, log_tau_max=tau_max_slider);
