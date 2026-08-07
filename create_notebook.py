@@ -350,46 +350,45 @@ circuit = CustomCircuit(circuit_string, initial_guess=initial_guess)
 # Cell 14: Electrode Stability Markdown (Extracted from cell 14, now put into its own cell)
 cells.append(nbf.v4.new_markdown_cell("""# Overall Electrode Stability (Single file preview)"""))
 
-cells.append(nbf.v4.new_code_cell("""import pandas as pd
-import matplotlib.pyplot as plt
+cells.append(nbf.v4.new_code_cell("""import matplotlib.pyplot as plt
+import ipywidgets as widgets
+from IPython.display import display
 
-# Preview the first dataset in our list
-if data_paths:
-    first_path = list(data_paths.values())[0]
-    skip_rows = 0
-    with open(first_path, 'r', encoding='latin-1') as f:
-        for i, line in enumerate(f):
-            if line.startswith('mode'):
-                skip_rows = i
-                break
-                
-    df_raw = pd.read_csv(first_path, sep='\\t', skiprows=skip_rows, encoding='latin-1')
-    
-    if 'time/s' in df_raw.columns and 'Ece/V' in df_raw.columns:
-        df_raw['time/s'] = pd.to_datetime(df_raw['time/s'], errors='coerce')
-        df_raw['time/h'] = (df_raw['time/s'] - df_raw['time/s'].iloc[0]) / pd.Timedelta(hours=1)
-        
-        fig, (ax1, ax2) = plt.subplots(nrows=2, ncols=1, figsize=(10, 7), sharex=True, 
-                                       gridspec_kw={'height_ratios': [3, 1], 'hspace': 0.1})
-        
-        # TOP PLOT
-        ax1.plot(df_raw['time/h'], df_raw['Ece/V'], label='Anode vs Ref (Ece)', color='red', linewidth=1.5)
-        if 'Ewe/V' in df_raw.columns:
-            ax1.plot(df_raw['time/h'], df_raw['Ewe/V'], label='Cathode vs Ref (Ewe)', color='blue', linewidth=1.5)
-        ax1.set_ylabel('Potential (V)', fontsize=12)
-        ax1.set_title(f'Overall Electrode Stability - {list(data_paths.keys())[0]}', fontsize=14)
-        ax1.legend(loc='best')
-        ax1.grid(True, alpha=0.5)
-        
-        # BOTTOM PLOT
-        ax2.plot(df_raw['time/h'], df_raw['Ece/V'], label='Anode vs Ref (Ece)', color='red', linewidth=1.5)
-        ax2.set_xlabel('Time (Hours)', fontsize=12)
-        ax2.set_ylabel('Anode (V)', fontsize=12)
-        ax2.legend(loc='best')
-        ax2.grid(True, alpha=0.5)
-        
-        plt.tight_layout()
-        plt.show()"""))
+def plot_electrode_stability(ds_name):
+    if ds_name in raw_dfs:
+        df_raw = raw_dfs[ds_name]
+        if 'time/h' in df_raw.columns and 'Ece/V' in df_raw.columns:
+            fig, (ax1, ax2) = plt.subplots(nrows=2, ncols=1, figsize=(10, 7), sharex=True, 
+                                           gridspec_kw={'height_ratios': [3, 1], 'hspace': 0.1})
+            
+            # TOP PLOT
+            ax1.plot(df_raw['time/h'], df_raw['Ece/V'], label='Anode vs Ref (Ece)', color='red', linewidth=1.5)
+            if 'Ewe/V' in df_raw.columns:
+                ax1.plot(df_raw['time/h'], df_raw['Ewe/V'], label='Cathode vs Ref (Ewe)', color='blue', linewidth=1.5)
+            ax1.set_ylabel('Potential (V)', fontsize=12)
+            ax1.set_title(f'Overall Electrode Stability - {ds_name}', fontsize=14)
+            ax1.legend(loc='best')
+            ax1.grid(True, alpha=0.5)
+            
+            # BOTTOM PLOT
+            ax2.plot(df_raw['time/h'], df_raw['Ece/V'], label='Anode vs Ref (Ece)', color='red', linewidth=1.5)
+            ax2.set_xlabel('Time (Hours)', fontsize=12)
+            ax2.set_ylabel('Anode (V)', fontsize=12)
+            ax2.legend(loc='best')
+            ax2.grid(True, alpha=0.5)
+            
+            plt.tight_layout()
+            plt.show()
+        else:
+            print(f"Data for {ds_name} does not contain 'time/h' or 'Ece/V'.")
+    else:
+        print(f"Dataset {ds_name} not found.")
+
+if dataset_names:
+    stability_ds_selector = widgets.Dropdown(
+        options=dataset_names, value=dataset_names[0], description='Dataset:', disabled=False
+    )
+    widgets.interact(plot_electrode_stability, ds_name=stability_ds_selector);"""))
 
 # Cell 15: DRT analysis Markdown
 cells.append(nbf.v4.new_markdown_cell("""# DRT analysis"""))
@@ -550,8 +549,8 @@ if tau_ref is not None:
         plt.show()
 
     cycle_range_slider = widgets.IntRangeSlider(
-        value=[all_cycles[0] if all_cycles else 0, all_cycles[-1] if all_cycles else 1],
-        min=min(all_cycles) if all_cycles else 0, max=max(all_cycles) if all_cycles else 1, step=1,
+        value=[cycle_ids[0] if cycle_ids else 0, cycle_ids[-1] if cycle_ids else 1],
+        min=min(cycle_ids) if cycle_ids else 0, max=max(cycle_ids) if cycle_ids else 1, step=1,
         description='Cycles:', continuous_update=False, orientation='horizontal'
     )
 
