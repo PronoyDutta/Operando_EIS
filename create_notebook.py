@@ -80,6 +80,11 @@ cells.append(nbf.v4.new_code_cell("""def load_biologic_mpt(filepath):
             # Bulletproof filter: drop empty rows, 0Hz freq, and 0 Ohm impedance points
             group = group.dropna(subset=['freq/Hz'])
             group = group[(group['freq/Hz'] != 0.0) & (group['Re(Z)/Ohm'] != 0.0)] 
+            
+            # Filter out extreme inductive outliers (negative on the Y-axis) 
+            # that ruin the capacitive curve_fit optimizer
+            group = group[group['-Im(Z)/Ohm'] > -5.0]
+            
             group = group[group['freq/Hz'] >= 0.09]
 
             if len(group) == 0:
@@ -106,8 +111,9 @@ cells.append(nbf.v4.new_code_cell("""def load_biologic_mpt(filepath):
 
 # Provide a dictionary of datasets to load
 data_paths = {
-    "Sample 1": Path("data/20260722_C23_SMSP20_operando_EIS_C01.mpt"),
-    "Sample 2": Path("data/20260803_3004SI20_C36_1pt19mg_SD3_operandoEIS_C01.mpt") # Add or remove paths as needed
+    "SI_0": Path("data/20260722_C23_SMSP20_operando_EIS_C01.mpt"),
+    "SI_20": Path("data/20260803_3004SI20_C36_1pt19mg_SD3_operandoEIS_C01.mpt"),
+    "SI_10": Path("data/20260918_C54_SI10_1pt07mg_operandoEIS_EIS_C01.mpt")
 }
 
 eis_dicts = {}
@@ -325,27 +331,265 @@ Since you are working with a LiS battery in a 3-electrode setup, you might start
 - `-`: Series elements"""))
 
 # Cell 13: Modeling Code
-cells.append(nbf.v4.new_code_cell("""# Define your circuit model
+cells.append(nbf.v4.new_code_cell("""import pandas as pd
+from impedance.models.circuits import CustomCircuit
+from IPython.display import display, clear_output
+import ipywidgets as widgets
+
+# Define your circuit model
 # Example: R0 + p(R1, CPE1) + p(R2, CPE2) + W1
 # circuit_string = 'R0-p(R1,CPE1)-p(R2,CPE2)-W1'
 # initial_guess = [10, 50, 1e-4, 0.8, 20, 1e-3, 0.8, 100]
 
 circuit_string = 'R0-p(R1,C1)-W1'
-initial_guess = [10, 50, 1e-4, 100] # Provide an initial guess for the parameters
+initial_guess = [10, 50, 1e-4, 100]
 
-circuit = CustomCircuit(circuit_string, initial_guess=initial_guess)
+dataset_selector_fit = widgets.SelectMultiple(
+    options=list(eis_dicts.keys()),
+    value=list(eis_dicts.keys()),
+    description='Datasets:',
+    disabled=False
+)
 
-# To fit the data from the selected cycle:
-# circuit.fit(freq, Z)
-# print(circuit)
+fit_button = widgets.Button(description="Run Fitting (Append)", button_style='success')
+clear_button = widgets.Button(description="Clear All Fits", button_style='danger')
+fit_output = widgets.Output()
 
-# To plot the fit against the data:
-# Z_fit = circuit.predict(freq)
-# fig, (ax_nyq, ax_bode) = plt.subplots(1, 2, figsize=(12, 5))
-# plot_nyquist(Z, ax=ax_nyq, fmt='o')
-# plot_nyquist(Z_fit, ax=ax_nyq, fmt='-')
-# plt.legend(['Data', 'Fit'])
-# plt.show()"""))
+# Initialize globally only if it doesn't exist so we can append across cell re-runs
+if 'df_fits' not in globals():
+    df_fits = pd.DataFrame()
+
+def on_fit_clicked(b):
+    global df_fits
+    with fit_output:
+        clear_output(wait=True)
+        selected_ds = dataset_selector_fit.value
+        if not selected_ds:
+            print("No datasets selected!")
+            return
+            
+        fit_results = []
+        print(f"Fitting model '{circuit_string}' for: {', '.join(selected_ds)}...")
+        
+        for ds_name in selected_ds:
+            # Overwrite previous fits for the SAME dataset if we are re-fitting it
+            if not df_fits.empty and 'Dataset' in df_fits.columns:
+                df_fits = df_fits[df_fits['Dataset'] != ds_name]
+                
+            for cycle_id, (freq, Z) in eis_dicts[ds_name].items():
+                meta = metadata_dicts[ds_name][cycle_id]
+                circuit = CustomCircuit(circuit_string, initial_guess=initial_guess)
+                
+                try:
+                    # Prevent unphysical negative parameters which cause weird "wiggles" in the fit
+                    lower_bounds = [0.0] * len(initial_guess)
+                    upper_bounds = [np.inf] * len(initial_guess)
+                    
+                    circuit.fit(freq, Z, bounds=(lower_bounds, upper_bounds))
+                    param_names = circuit.get_param_names()[0]
+                    param_values = circuit.parameters_
+                    param_errors = getattr(circuit, 'conf_', [0.0]*len(param_names))
+                    
+                    row = {
+                        'Dataset': ds_name,
+                        'Cycle': cycle_id,
+                        'State': meta['state'],
+                        'Voltage': float(meta['voltage']),
+                        'Time_h': meta['time']
+                    }
+                    
+                    for name, val, err in zip(param_names, param_values, param_errors):
+                        row[name] = val
+                        row[f"{name}_err"] = err
+                        
+                    fit_results.append(row)
+                except Exception as e:
+                    print(f"Failed {ds_name} Cycle {cycle_id}: {e}")
+                    
+        new_fits = pd.DataFrame(fit_results)
+        if not df_fits.empty:
+            df_fits = pd.concat([df_fits, new_fits], ignore_index=True)
+        else:
+            df_fits = new_fits
+            
+        print(f"Fitting complete! Total data points stored: {len(df_fits)}")
+        display(df_fits.tail(10))
+
+def on_clear_clicked(b):
+    global df_fits
+    df_fits = pd.DataFrame()
+    with fit_output:
+        clear_output()
+        print("All stored fits have been cleared.")
+
+fit_button.on_click(on_fit_clicked)
+clear_button.on_click(on_clear_clicked)
+display(widgets.HBox([dataset_selector_fit, fit_button, clear_button]), fit_output)
+"""))
+
+# Cell 13.5: Fitted Parameters Visualization Markdown
+cells.append(nbf.v4.new_markdown_cell("""## 3.1 Analyzing Fitted Parameters across SOC/SOD
+Track how the fitted parameters (e.g., R0, R1) evolve with cycle number or voltage across your different states."""))
+
+# Cell 13.6: Fitted Parameters Visualization Code
+cells.append(nbf.v4.new_code_cell("""import seaborn as sns
+import matplotlib.pyplot as plt
+import ipywidgets as widgets
+from IPython.display import display
+
+if 'df_fits' not in globals() or df_fits.empty:
+    print("No fit data available. Please select datasets and click 'Run Fitting' in the previous cell first.")
+else:
+    def plot_fitted_params(param_to_plot, x_axis_col, show_errors, exclude_cycles):
+        df_plot = df_fits[~df_fits['Cycle'].isin(exclude_cycles)]
+        
+        if df_plot.empty:
+            print("All data points excluded.")
+            return
+            
+        fig, ax = plt.subplots(figsize=(10, 6))
+        
+        # Scatter plot
+        sns.scatterplot(
+            data=df_plot, 
+            x=x_axis_col, 
+            y=param_to_plot, 
+            hue='Dataset', 
+            style='State',
+            s=100, 
+            ax=ax,
+            zorder=3
+        )
+        
+        # Optionally add error bars
+        if show_errors and f"{param_to_plot}_err" in df_plot.columns:
+            for ds_name in df_plot['Dataset'].unique():
+                ds_data = df_plot[df_plot['Dataset'] == ds_name]
+                ax.errorbar(
+                    ds_data[x_axis_col], ds_data[param_to_plot],
+                    yerr=ds_data[f"{param_to_plot}_err"],
+                    fmt='none', alpha=0.5, zorder=2, ecolor='black', capsize=3
+                )
+
+        # Add connecting lines
+        for ds_name in df_plot['Dataset'].unique():
+            ds_data = df_plot[df_plot['Dataset'] == ds_name].sort_values(by=x_axis_col)
+            ax.plot(ds_data[x_axis_col], ds_data[param_to_plot], alpha=0.3, zorder=1)
+            
+        ax.set_title(f"Evolution of {param_to_plot} vs {x_axis_col}", fontsize=14)
+        ax.grid(True, alpha=0.5)
+        plt.tight_layout()
+        plt.show()
+
+    # Filter out error columns and metadata for the dropdown
+    excluded_cols = ['Dataset', 'Cycle', 'State', 'Voltage', 'Time_h']
+    param_options = [col for col in df_fits.columns if col not in excluded_cols and not col.endswith('_err')]
+    x_axis_options = ['Cycle', 'Voltage', 'Time_h']
+    
+    if param_options:
+        param_selector = widgets.Dropdown(options=param_options, description='Parameter:')
+        x_axis_selector = widgets.Dropdown(options=x_axis_options, description='X-Axis:', value='Cycle')
+        error_checkbox = widgets.Checkbox(value=True, description='Show Error Bars')
+        
+        all_cycles = sorted(df_fits['Cycle'].unique().tolist())
+        exclude_selector = widgets.SelectMultiple(
+            options=all_cycles, 
+            value=[], 
+            description='Exclude Cycles:',
+            style={'description_width': 'initial'}
+        )
+        
+        # Arrange widgets nicely
+        ui = widgets.HBox([
+            widgets.VBox([param_selector, x_axis_selector, error_checkbox]), 
+            exclude_selector
+        ])
+        
+        out = widgets.interactive_output(plot_fitted_params, {
+            'param_to_plot': param_selector, 
+            'x_axis_col': x_axis_selector,
+            'show_errors': error_checkbox,
+            'exclude_cycles': exclude_selector
+        })
+        display(ui, out)
+    else:
+        print("No parameters successfully fitted.")
+"""))
+
+# Cell 13.7: Fit Quality Visualization Markdown
+cells.append(nbf.v4.new_markdown_cell("""## 3.2 Visualizing Fit Quality
+Compare the raw EIS Nyquist plot against the fitted equivalent circuit model to assess fit quality for a specific dataset and cycle."""))
+
+# Cell 13.8: Fit Quality Visualization Code
+cells.append(nbf.v4.new_code_cell("""from impedance.visualization import plot_nyquist
+import matplotlib.pyplot as plt
+import ipywidgets as widgets
+from IPython.display import display
+from impedance.models.circuits import CustomCircuit
+import numpy as np
+
+if 'df_fits' not in globals() or df_fits.empty:
+    print("No fit data available. Please fit your data first.")
+else:
+    def plot_fit_quality(dataset_name, cycle_id):
+        if dataset_name not in eis_dicts or cycle_id not in eis_dicts[dataset_name]:
+            print(f"Data for {dataset_name} Cycle {cycle_id} not found.")
+            return
+            
+        freq, Z = eis_dicts[dataset_name][cycle_id]
+        
+        row = df_fits[(df_fits['Dataset'] == dataset_name) & (df_fits['Cycle'] == cycle_id)]
+        if row.empty:
+            print(f"No fitting results found for {dataset_name} Cycle {cycle_id}.")
+            return
+            
+        row = row.iloc[0]
+        
+        excluded_cols = ['Dataset', 'Cycle', 'State', 'Voltage', 'Time_h']
+        param_names = [c for c in df_fits.columns if c not in excluded_cols and not c.endswith('_err')]
+        param_values = [row[p] for p in param_names]
+        
+        c_string = globals().get('circuit_string', 'R0-p(R1,C1)-W1')
+        
+        try:
+            circuit = CustomCircuit(c_string, initial_guess=param_values)
+            circuit.parameters_ = np.array(param_values)
+            Z_fit = circuit.predict(freq)
+            
+            fig, ax = plt.subplots(figsize=(8, 8))
+            plot_nyquist(Z, ax=ax, fmt='o', label='Raw Data')
+            plot_nyquist(Z_fit, ax=ax, fmt='-', label='Fitted Model')
+            
+            ax.set_title(f"Fit Quality: {dataset_name} - Cycle {cycle_id}", fontsize=14)
+            ax.legend(loc='best')
+            plt.tight_layout()
+            plt.show()
+            
+            print("Fitted Parameters:")
+            for p, v in zip(param_names, param_values):
+                err = row.get(f"{p}_err", 0.0)
+                print(f"  {p} = {v:.4e} ± {err:.4e}")
+                
+        except Exception as e:
+            print(f"Could not reconstruct circuit for plotting: {e}")
+
+    datasets_with_fits = df_fits['Dataset'].unique().tolist()
+    if datasets_with_fits:
+        ds_selector = widgets.Dropdown(options=datasets_with_fits, description='Dataset:')
+        cycle_selector = widgets.Dropdown(description='Cycle:')
+        
+        def update_cycles(*args):
+            ds = ds_selector.value
+            valid_cycles = sorted(df_fits[df_fits['Dataset'] == ds]['Cycle'].unique().tolist())
+            cycle_selector.options = valid_cycles
+            if valid_cycles:
+                cycle_selector.value = valid_cycles[0]
+                
+        ds_selector.observe(update_cycles, 'value')
+        update_cycles() 
+        
+        widgets.interact(plot_fit_quality, dataset_name=ds_selector, cycle_id=cycle_selector)
+"""))
 
 # Cell 14: Electrode Stability Markdown (Extracted from cell 14, now put into its own cell)
 cells.append(nbf.v4.new_markdown_cell("""# Overall Electrode Stability (Single file preview)"""))
@@ -420,7 +664,7 @@ def compute_drt(freq, Z_imag, lam):
     gamma_opt, _ = nnls(A_aug, b_aug)
     return tau, gamma_opt
 
-def update_drt(cycle_id, log_lam, selected_datasets):
+def update_drt(cycle_id, log_lam, selected_datasets, x_min, x_max, y_min, y_max):
     lam = 10**log_lam
     fig, ax_drt = plt.subplots(figsize=(8, 5))
     
@@ -435,13 +679,23 @@ def update_drt(cycle_id, log_lam, selected_datasets):
             ls = linestyles[idx % len(linestyles)]
             ax_drt.semilogx(tau, gamma, marker='o', markersize=4, linestyle=ls, label=f'{ds_name}')
     
-    ax_drt.set_xlabel('Relaxation Time $\\tau$ (s)', fontsize=12)
+    ax_drt.set_xlabel(r'Relaxation Time $\tau$ (s)', fontsize=12)
     ax_drt.set_ylabel(r'$\gamma(\tau)$ ($\Omega$)', fontsize=12)
-    ax_drt.set_title(f"DRT Analysis - Cycle {cycle_id} ($\\lambda$ = {lam:.1e})", fontsize=14)
+    ax_drt.set_title(rf"DRT Analysis - Cycle {cycle_id} ($\lambda$ = {lam:.1e})", fontsize=14)
     ax_drt.grid(True, alpha=0.5)
     
     if selected_datasets:
         ax_drt.legend(loc='best')
+        
+    # Apply x limits before plt.show(). 
+    # Pass None if the value is -999 (auto), otherwise use the exact value provided
+    left_lim = x_min if x_min != -999 else None
+    right_lim = x_max if x_max != -999 else None
+    bottom_lim = y_min if y_min != -999 else None
+    top_lim = y_max if y_max != -999 else None
+    
+    ax_drt.set_xlim(left=left_lim, right=right_lim)
+    ax_drt.set_ylim(bottom=bottom_lim, top=top_lim)
         
     plt.tight_layout()
     plt.show()
@@ -452,13 +706,27 @@ if cycle_ids:
     )
     lam_slider = widgets.FloatSlider(
         value=-2.0, min=-5.0, max=1.0, step=0.5, 
-        description='log($\\lambda$):', continuous_update=False,
+        description=r'log($\lambda$):', continuous_update=False,
         tooltip="Lower = fits noise (spiky). Higher = over-smoothed."
     )
     drt_dataset_selector = widgets.SelectMultiple(
         options=dataset_names, value=[dataset_names[0]], description='Datasets:', disabled=False
     )
-    widgets.interact(update_drt, cycle_id=cycle_slider_drt, log_lam=lam_slider, selected_datasets=drt_dataset_selector);"""))
+    
+    # New text boxes for setting x limits precisely. Default to 0 for auto-scaling.
+    x_min_input = widgets.FloatText(value=-999.0, description='X Min (-999=auto):', continuous_update=False)
+    x_max_input = widgets.FloatText(value=-999.0, description='X Max (-999=auto):', continuous_update=False)
+    y_min_input = widgets.FloatText(value=-999.0, description='Y Min (-999=auto):', continuous_update=False)
+    y_max_input = widgets.FloatText(value=-999.0, description='Y Max (-999=auto):', continuous_update=False)
+
+    widgets.interact(update_drt, 
+                     cycle_id=cycle_slider_drt, 
+                     log_lam=lam_slider, 
+                     selected_datasets=drt_dataset_selector,
+                     x_min=x_min_input,
+                     x_max=x_max_input,
+                     y_min=y_min_input,
+                     y_max=y_max_input);"""))
 
 # Cell 17: DRT Interactive Contour Markdown
 cells.append(nbf.v4.new_markdown_cell("""# DRT Multi-Cycle Contour"""))
@@ -537,7 +805,7 @@ if tau_ref is not None:
         contour = ax2.contourf(X, Y, gamma_matrix, levels=np.linspace(0, intensity_max, 30), cmap='viridis', extend='max')
 
         ax2.set_xscale('log') 
-        ax2.set_xlim(left=tau_min, right=tau_max)
+        ax2.set_xlim(left=tau_min, right=0.5)
         ax2.set_xlabel('Relaxation Time $\\tau$ (s)', fontsize=12)
         ax2.set_ylabel('Cycle Number', fontsize=12)
         ax2.set_title(f'DRT Contour Map ({ds_name} Cycles {start}-{end})', fontsize=14)
