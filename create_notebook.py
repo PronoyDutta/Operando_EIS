@@ -381,11 +381,8 @@ def on_fit_clicked(b):
                 circuit = CustomCircuit(circuit_string, initial_guess=initial_guess)
                 
                 try:
-                    # Prevent unphysical negative parameters which cause weird "wiggles" in the fit
-                    lower_bounds = [0.0] * len(initial_guess)
-                    upper_bounds = [np.inf] * len(initial_guess)
-                    
-                    circuit.fit(freq, Z, bounds=(lower_bounds, upper_bounds))
+                    # Rely on impedance.py's internal bounds to prevent alpha > 1
+                    circuit.fit(freq, Z)
                     param_names = circuit.get_param_names()[0]
                     param_values = circuit.parameters_
                     param_errors = getattr(circuit, 'conf_', [0.0]*len(param_names))
@@ -395,7 +392,9 @@ def on_fit_clicked(b):
                         'Cycle': cycle_id,
                         'State': meta['state'],
                         'Voltage': float(meta['voltage']),
-                        'Time_h': meta['time']
+                        'Time_h': meta['time'],
+                        'Circuit': circuit_string,
+                        'ParamNames': ','.join(param_names)
                     }
                     
                     for name, val, err in zip(param_names, param_values, param_errors):
@@ -482,7 +481,7 @@ else:
         plt.show()
 
     # Filter out error columns and metadata for the dropdown
-    excluded_cols = ['Dataset', 'Cycle', 'State', 'Voltage', 'Time_h']
+    excluded_cols = ['Dataset', 'Cycle', 'State', 'Voltage', 'Time_h', 'Circuit', 'ParamNames']
     param_options = [col for col in df_fits.columns if col not in excluded_cols and not col.endswith('_err')]
     x_axis_options = ['Cycle', 'Voltage', 'Time_h']
     
@@ -545,11 +544,17 @@ else:
             
         row = row.iloc[0]
         
-        excluded_cols = ['Dataset', 'Cycle', 'State', 'Voltage', 'Time_h']
-        param_names = [c for c in df_fits.columns if c not in excluded_cols and not c.endswith('_err')]
-        param_values = [row[p] for p in param_names]
+        c_string = row.get('Circuit', globals().get('circuit_string', 'R0-p(R1,C1)-W1'))
         
-        c_string = globals().get('circuit_string', 'R0-p(R1,C1)-W1')
+        if 'ParamNames' in row and pd.notna(row['ParamNames']):
+            param_names = row['ParamNames'].split(',')
+        else:
+            # Fallback for older fits without ParamNames
+            excluded_cols = ['Dataset', 'Cycle', 'State', 'Voltage', 'Time_h', 'Circuit', 'ParamNames']
+            param_names = [c for c in df_fits.columns if c not in excluded_cols and not c.endswith('_err')]
+            param_names = [p for p in param_names if pd.notna(row.get(p))]
+            
+        param_values = [row.get(p, 0.0) for p in param_names]
         
         try:
             circuit = CustomCircuit(c_string, initial_guess=param_values)
