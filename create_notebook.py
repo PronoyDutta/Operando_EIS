@@ -15,7 +15,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
 from impedance.models.circuits import CustomCircuit
-from impedance.visualization import plot_nyquist, plot_bode"""))
+from impedance.visualization import plot_nyquist, plot_bode
+from matplotlib.ticker import AutoMinorLocator"""))
 
 # Cell 2: Data Loader Markdown
 cells.append(nbf.v4.new_markdown_cell("""## 1. Data Loading
@@ -147,7 +148,40 @@ for d in eis_dicts.values():
 cycle_ids = sorted(list(all_cycles))
 
 def update_plot(cycle_id, selected_datasets):
-    fig, (ax_nyq, ax_ec) = plt.subplots(1, 2, figsize=(14, 6))
+    # Nature Energy / Publication Quality Settings
+    plt.rcParams.update({
+        'font.family': 'sans-serif',
+        'font.sans-serif': ['Arial', 'Helvetica', 'DejaVu Sans'],
+        'font.size': 12,          # Scaled up slightly for Jupyter readability 
+        'axes.labelsize': 14,     # Journal recommended relative sizing
+        'axes.titlesize': 14,
+        'xtick.labelsize': 12,
+        'ytick.labelsize': 12,
+        'legend.fontsize': 11,
+        'axes.linewidth': 1.5,    # Thicker axes borders
+        'lines.linewidth': 2,
+        'lines.markersize': 6,
+        'xtick.major.width': 1.5,
+        'ytick.major.width': 1.5,
+        'xtick.minor.width': 1.0,
+        'ytick.minor.width': 1.0,
+        
+        # Specific theme additions:
+        'xtick.direction': 'in',
+        'ytick.direction': 'in',
+        'xtick.top': True,
+        'ytick.right': True,
+        'xtick.minor.visible': True,
+        'ytick.minor.visible': True,
+        'xtick.major.size': 5,      # Smaller ticks
+        'ytick.major.size': 5,
+        'xtick.minor.size': 3,
+        'ytick.minor.size': 3,
+        'legend.frameon': False,    # No square box around legend
+    })
+    
+    fig_nyq, ax_nyq = plt.subplots(figsize=(6, 5))
+    fig_ec, ax_ec = plt.subplots(figsize=(6, 5))
     
     for ds_name in selected_datasets:
         if cycle_id in eis_dicts[ds_name]:
@@ -158,21 +192,32 @@ def update_plot(cycle_id, selected_datasets):
             
             # Use exact legend format requested by the user
             label = f"{ds_name.upper()}-CYCLE {cycle_id} {state} {voltage}V"
-            plot_nyquist(Z, ax=ax_nyq, label=label)
+            plot_nyquist(Z, ax=ax_nyq, label=label, alpha=0.5)
             
             # Plot EC curve
             df_raw = raw_dfs[ds_name]
             if 'time/h' in df_raw.columns and 'Ewe/V' in df_raw.columns:
-                p = ax_ec.plot(df_raw['time/h'], df_raw['Ewe/V'], label=f"{ds_name} EC Curve", alpha=0.6)
+                p = ax_ec.plot(df_raw['time/h'], df_raw['Ewe/V'], label=f"{ds_name} EC Curve", alpha=0.8)
                 color = p[0].get_color()
                 # Red dot highlighting this cycle's location
-                ax_ec.plot(meta['time'], meta['ewe'], marker='o', markersize=8, color='red', markeredgecolor='black', zorder=5)
+                ax_ec.plot(meta['time'], meta['ewe'], marker='o', markersize=8, color='red', markeredgecolor='black', markeredgewidth=1.5, zorder=5)
             
-    ax_nyq.set_title(f"Operando Nyquist Plot - Cycle {cycle_id}", fontsize=14)
-    ax_ec.set_title("Electrochemical Profile", fontsize=14)
-    ax_ec.set_xlabel("Time (Hours)", fontsize=12)
-    ax_ec.set_ylabel("Ewe (V)", fontsize=12)
-    ax_ec.grid(True, alpha=0.5)
+    ax_nyq.set_title(f"Operando Nyquist Plot - Cycle {cycle_id}")
+    # Explicitly set Nyquist labels to use () instead of []
+    ax_nyq.set_xlabel(r"Z' ($\Omega$)")
+    ax_nyq.set_ylabel(r"-Z'' ($\Omega$)")
+    # Turn off grid for publication style
+    ax_nyq.grid(False) 
+    ax_nyq.xaxis.set_minor_locator(AutoMinorLocator(2))
+    ax_nyq.yaxis.set_minor_locator(AutoMinorLocator(2))
+    
+    ax_ec.set_title("Electrochemical Profile")
+    ax_ec.set_xlabel("Time (h)")
+    ax_ec.set_ylabel("Potential (V)")
+    # Turn off grid for publication style
+    ax_ec.grid(False) 
+    ax_ec.xaxis.set_minor_locator(AutoMinorLocator(2))
+    ax_ec.yaxis.set_minor_locator(AutoMinorLocator(2))
     
     ax_nyq.set_xlim(0, 100)
     ax_nyq.set_ylim(0, 100)
@@ -180,7 +225,8 @@ def update_plot(cycle_id, selected_datasets):
     if selected_datasets:
         ax_nyq.legend(loc='best')
         ax_ec.legend(loc='best')
-    plt.tight_layout()
+    fig_nyq.tight_layout()
+    fig_ec.tight_layout()
     plt.show()
 
 if not cycle_ids:
@@ -278,7 +324,8 @@ def update_multi_plot(cycle_range, selected_datasets):
             
     ax_nyq.set_title(f"Operando Nyquist Plot (Cycles {start} to {end})")
     ax_nyq.legend(bbox_to_anchor=(1.05, 1), loc='upper left', ncol=max(1, len(selected_datasets)//2))
-    plt.tight_layout()
+    fig_nyq.tight_layout()
+    fig_ec.tight_layout()
     plt.show()
 
 if cycle_ids:
@@ -308,7 +355,8 @@ cells.append(nbf.v4.new_code_cell("""def plot_eis_data(freq, Z, title="EIS Measu
     plot_bode(freq, Z, axes=ax_bode)
     ax_bode[0].set_title(f"Bode Plot - {title}")
     
-    plt.tight_layout()
+    fig_nyq.tight_layout()
+    fig_ec.tight_layout()
     plt.show()
 
 # Example usage (plotting the first loop):
@@ -477,7 +525,8 @@ else:
             
         ax.set_title(f"Evolution of {param_to_plot} vs {x_axis_col}", fontsize=14)
         ax.grid(True, alpha=0.5)
-        plt.tight_layout()
+        fig_nyq.tight_layout()
+    fig_ec.tight_layout()
         plt.show()
 
     # Filter out error columns and metadata for the dropdown
@@ -567,7 +616,8 @@ else:
             
             ax.set_title(f"Fit Quality: {dataset_name} - Cycle {cycle_id}", fontsize=14)
             ax.legend(loc='best')
-            plt.tight_layout()
+            fig_nyq.tight_layout()
+    fig_ec.tight_layout()
             plt.show()
             
             print("Fitted Parameters:")
@@ -626,7 +676,8 @@ def plot_electrode_stability(ds_name):
             ax2.legend(loc='best')
             ax2.grid(True, alpha=0.5)
             
-            plt.tight_layout()
+            fig_nyq.tight_layout()
+    fig_ec.tight_layout()
             plt.show()
         else:
             print(f"Data for {ds_name} does not contain 'time/h' or 'Ece/V'.")
@@ -702,7 +753,8 @@ def update_drt(cycle_id, log_lam, selected_datasets, x_min, x_max, y_min, y_max)
     ax_drt.set_xlim(left=left_lim, right=right_lim)
     ax_drt.set_ylim(bottom=bottom_lim, top=top_lim)
         
-    plt.tight_layout()
+    fig_nyq.tight_layout()
+    fig_ec.tight_layout()
     plt.show()
 
 if cycle_ids:
@@ -818,7 +870,8 @@ if tau_ref is not None:
         cbar2 = fig.colorbar(contour, ax=ax2)
         cbar2.set_label(r'$\gamma(\tau)$ Intensity ($\Omega$)')
 
-        plt.tight_layout()
+        fig_nyq.tight_layout()
+    fig_ec.tight_layout()
         plt.show()
 
     cycle_range_slider = widgets.IntRangeSlider(
