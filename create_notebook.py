@@ -862,7 +862,7 @@ if tau_ref is not None:
         contour = ax2.contourf(X, Y, gamma_matrix, levels=np.linspace(0, intensity_max, 30), cmap='viridis', extend='max')
 
         ax2.set_xscale('log') 
-        ax2.set_xlim(left=tau_min, right=0.5)
+        ax2.set_xlim(left=tau_min, right=tau_max)
         ax2.set_xlabel('Relaxation Time $\\tau$ (s)', fontsize=12)
         ax2.set_ylabel('Cycle Number', fontsize=12)
         ax2.set_title(f'DRT Contour Map ({ds_name} Cycles {start}-{end})', fontsize=14)
@@ -870,8 +870,7 @@ if tau_ref is not None:
         cbar2 = fig.colorbar(contour, ax=ax2)
         cbar2.set_label(r'$\gamma(\tau)$ Intensity ($\Omega$)')
 
-        fig_nyq.tight_layout()
-    fig_ec.tight_layout()
+        plt.tight_layout()
         plt.show()
 
     cycle_range_slider = widgets.IntRangeSlider(
